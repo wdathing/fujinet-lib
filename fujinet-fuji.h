@@ -6,20 +6,29 @@
 // In general, bools return the "success" status, so true is good, false is bad.
 
 #ifdef _CMOC_VERSION_
-    #include <cmoc.h>
-    #include <coco.h>
 
-    #ifndef bool
-    #define bool _FNBool
-    typedef unsigned char _FNBool;
-    #endif /* bool */
+// CMOC-specific types and definitions
+#include <cmoc.h>
+#include <coco.h>
 
-    #define true  1
-    #define false 0
+#ifndef bool
+#define bool unsigned char
+#endif /* bool */
+
+#define true  1
+#define false 0
+
+// Define standard integer types for CMOC
+#define uint8_t unsigned char
+#define int8_t signed char
+#define uint16_t unsigned short
+#define int16_t signed short
+#define uint32_t unsigned long
+#define int32_t signed long
 #else
-    #include <stddef.h>
-    #include <stdbool.h>
-    #include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+#include <stdint.h>
 #endif /* _CMOC_VERSION_ */
 
 #ifdef __CBM__
@@ -654,5 +663,12 @@ bool fuji_hash_add(uint8_t *data, uint16_t length);
  * @return the success status of the operation.
  */
 bool fuji_hash_calculate(hash_alg_t hash_type, bool as_hex, bool discard_data, uint8_t *output);
+
+/**
+ * @brief  The default timeout for fuji commands. Platform dependent on if it does anything.
+ * The value defaults to 0x0F. No setter. This isn't java.
+ */
+extern uint8_t fn_default_timeout;
+
 
 #endif /* FN_FUJI_H */
