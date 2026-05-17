@@ -7,6 +7,7 @@
 
 #ifdef _CMOC_VERSION_
 // CMOC-specific types and definitions
+#include <cmoc.h>
 #ifndef bool
 #define bool unsigned char
 #endif /* bool */

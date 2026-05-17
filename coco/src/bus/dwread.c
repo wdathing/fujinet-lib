@@ -16,7 +16,8 @@ byte dwread(byte *s, int l)
         pshs x,y
         ldx :s
         ldy :l
-        jsr [0xD93F]
+//        jsr [*dwreadvec]
+        jsr [0xFA00]
         puls y,x
         tfr cc,b
         lsrb

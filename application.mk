@@ -2,4 +2,4 @@
 
 -include makefiles/unit_tests.mk
 
-# CFLAGS += -DFN_LIB_DEBUG
+CFLAGS += -DFN_LIB_DEBUG

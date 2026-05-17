@@ -12,10 +12,10 @@
 #include <fujinet-fuji-coco.h>
 
 
-#define DWWRT_VEC_DRG 0xD941
-#define DWREAD_VEC_DRG 0xD93F
-#define DWWRT_VEC_COCO 0xFA00
-#define DWREAD_VEC_COCO 0xF9FE
+#define DWWRT_VEC_COCO 0xD941
+#define DWREAD_VEC_COCO 0xD93F
+#define DWWRT_VEC_DRG 0xFA00
+#define DWREAD_VEC_DRG 0xF9FE
 
 static gbDWInited = false;
 // default to coco read/write if not inited.
