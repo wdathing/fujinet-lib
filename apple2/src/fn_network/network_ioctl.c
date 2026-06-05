@@ -21,14 +21,27 @@ uint8_t network_ioctl(uint8_t cmd, uint8_t aux1, uint8_t aux2, const char* devic
 	uint8_t nw_device;
     uint16_t len;
     void *buffer;
-    bool use_aux;
+    bool use_aux = false;
     uint8_t offset = 2;
 
-    // we expect __argsize__ to be 11 from:
+    // we expect __argsize__ to be either 5 or 11 from:
     //   5 for fixed args (u8 * 3 + char *)
     //  +6 (3 args, 2 bytes each)
     // otherwise the function was called with wrong number of args
-    if (__argsize__ != 11) {
+    if (__argsize__ == 5) {
+	    len = strlen(devicespec) + 1;// + 1 for NUL string terminator
+        buffer = devicespec;
+    }
+    else if (__argsize__ == 11) {
+        // read the args. Note the first values are in order args are passed, unlike asm which is from right backwards
+        // every vararg takes 2 bytes, even bool/uint8_t, so fetch them in pairs
+        va_start(args, devicespec);
+        use_aux = (bool) va_arg(args, int);
+        buffer = (void *) va_arg(args, int);
+        len = (uint16_t) va_arg(args, int);
+        va_end(args);
+    }
+    else {
         return fn_error(SP_ERR_BAD_CMD);
     }
 
@@ -42,14 +55,6 @@ uint8_t network_ioctl(uint8_t cmd, uint8_t aux1, uint8_t aux2, const char* devic
 	if (sp_network == 0) {
         return bad_unit();
 	}
-
-    // read the args. Note the first values are in order args are passed, unlike asm which is from right backwards
-    // every vararg takes 2 bytes, even bool/uint8_t, so fetch them in pairs
-    va_start(args, devicespec);
-    use_aux = (bool) va_arg(args, int);
-    buffer = (void *) va_arg(args, int);
-    len = (uint16_t) va_arg(args, int);
-    va_end(args);
 
     // set the Nx: unit id
     network_set_unit(network_unit(devicespec));
