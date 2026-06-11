@@ -67,15 +67,15 @@ Permissions Size User  Date Modified Name
 ```
 
 To build with a specific version string in the files instead of the hash, specify the VERSION_STRING
-env directly (along with any other env values, like the TARGETS if you wish to only build limited set):
+env directly **using just the number without 'v'** (along with any other env values, like the TARGETS if you wish to only build limited set):
 ```shell
-❯ make VERSION_STRING=v4.11.3 TARGETS="c64 msdos" release
+❯ make VERSION_STRING=4.11.3 TARGETS="c64 msdos" release
 # ...
 
 ❯ ll dist
 Permissions Size User  Date Modified Name
-.rw-r--r--   59k markf 11 Jun 16:28   fujinet-lib-c64-v4.11.3.zip
-.rw-r--r--   29k markf 11 Jun 16:28   fujinet-lib-msdos-v4.11.3.zip
+.rw-r--r--   59k markf 11 Jun 16:28   fujinet-lib-c64-4.11.3.zip
+.rw-r--r--   29k markf 11 Jun 16:28   fujinet-lib-msdos-4.11.3.zip
 ```
 
 ## Adding additional build flags to local release
