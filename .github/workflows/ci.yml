@@ -21,6 +21,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set version string
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            version="${{ github.ref_name }}"
+            echo "VERSION_STRING=${version#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION_STRING=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+          fi
+
       - name: Build release files
         run: make release
 
