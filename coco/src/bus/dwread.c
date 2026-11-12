@@ -11,17 +11,18 @@
 
 byte dwread(byte *s, int l)
 {
+    /* See dwwrite: save/restore U and DP across the ROM vector call. */
     asm
     {
-        pshs x,y
+        pshs x,y,u,dp
         ldx :s
         ldy :l
 #ifdef DRAGON
         jsr [0xF9FE]
-#else        
+#else
         jsr [0xD93F]
 #endif
-        puls y,x
+        puls dp,u,y,x
         tfr cc,b
         lsrb
         lsrb
