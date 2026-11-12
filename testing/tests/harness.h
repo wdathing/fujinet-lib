@@ -1,0 +1,53 @@
+#ifndef HARNESS_H
+#define HARNESS_H
+
+#include <fujinet-fuji.h>
+#ifndef FNLIB_VERSION_FULL
+#warning "Guessing at fujinet-lib version"
+#define FNLIB_VERSION_FULL "vClassic"
+#endif
+
+/* What a line of output represents; tprint() shows each the way the
+ * platform can, in color or inverse video (#96). */
+enum {
+  TP_PLAIN,
+  TP_PASS,
+  TP_FAIL,
+  TP_ALL_PASSED,
+  TP_ABORTED,
+  TP_ID_CLEAN,
+  TP_ID_DIRTY
+};
+#define TEST(name, expr) test_check((expr) != 0, name, __LINE__)
+
+/*
+ * SKIP(fn_name) -- use instead of calling a broken function directly.
+ * Prints a SKIP line and jumps to the label 'fn_skipped' in the enclosing
+ * function, which should sit just before the closing brace.
+ */
+#define SKIP(fn_name)                                                   \
+    do {                                                                \
+      tests_skipped++;                                                  \
+      printf("SKIP  %s (known broken)\n", #fn_name);                    \
+      goto fn_skipped;                                                  \
+    } while (0)
+
+#define SECTION(title) printf("\n--- %s ---\n", title)
+
+// Suppress cc65 warning about no goto
+#define END_OF_TEST()                           \
+  goto fn_skipped;                              \
+fn_skipped:                                     \
+ return;
+
+extern int tests_run, tests_passed, tests_skipped, tests_failed;
+extern const char *test_program;
+
+extern void begin_testing();
+extern void end_testing(int code);
+extern void print_versions();
+extern void test_abort(void);
+extern void test_check(uint8_t ok, const char *name, int line);
+extern void tprint(uint8_t what, const char *s);
+
+#endif /* HARNESS_H */

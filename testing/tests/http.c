@@ -1,0 +1,828 @@
+/**
+ * @file http.c
+ * @brief HTTP(S) and JSON channel tests.
+ */
+
+#include "broken.h"
+
+#include "harness.h"
+#include "constants.h"
+#include "globals.h"
+#include <fujinet-network.h>
+#include <fujinet-clock.h>
+
+#ifndef _CMOC_VERSION_
+#include <stdio.h>
+#include <string.h>
+#endif /* _CMOC_VERSION_ */
+
+void test_network_http_get(void)
+{
+  uint8_t err;
+  uint16_t bw;
+  uint8_t conn;
+  uint8_t nerr;
+  int16_t read_result;
+
+  SECTION("network HTTP GET read");
+
+#ifdef FN_BROKEN_network_open
+  SKIP(network_open);
+#else
+  err = network_open(NET_DEVICESPEC, OPEN_MODE_HTTP_GET, OPEN_TRANS_LF);
+  TEST("network_open (GET) returns FN_ERR_OK", err == FN_ERR_OK);
+#endif
+
+  bw = 0; conn = 0; nerr = 0;
+#ifdef FN_BROKEN_network_status
+  SKIP(network_status);
+#else
+  err = network_status(NET_DEVICESPEC, &bw, &conn, &nerr);
+  TEST("network_status after open succeeds", err == FN_ERR_OK);
+  printf("  bytes_waiting=%u conn=%u net_error=%u\n", bw, conn, nerr);
+  TEST("network no error", nerr == NETWORK_SUCCESS);
+#endif
+
+#ifdef FN_BROKEN_network_read
+  SKIP(network_read);
+#else
+  memset(g.net, 0, sizeof(g.net));
+  read_result = network_read(NET_DEVICESPEC, g.net, sizeof(g.net));
+  TEST("network_read returns positive byte count", read_result > 0);
+#if 0
+  TEST("fn_bytes_read is non-zero", fn_bytes_read > 0);
+  printf("  Read %d bytes (fn_bytes_read=%u)\n",
+         (int)read_result, fn_bytes_read);
+#else
+  printf("  Read %d bytes\n", (int)read_result);
+#endif // 0
+#endif
+
+#ifdef FN_BROKEN_network_close
+  SKIP(network_close);
+#else
+  err = network_close(NET_DEVICESPEC);
+  TEST("network_close after GET succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+/* Request one byte beyond ABC so network_read must actively poll completion,
+ * not just return the body. Do not print between that read and STATUS.
+ * g.net holds a padded device spec for fixed 256-byte OPEN packets. */
+void test_network_http_fixed_completion(void)
+{
+  uint8_t err, conn, nerr, close_err;
+  uint16_t bw;
+  int16_t r;
+  uint8_t body[4];
+  const char *url = (const char *) g.net;
+
+  SECTION("HTTP fixed held-peer completion");
+  memset(g.net, 0, MAX_FILENAME_LEN);
+  strcpy((char *) g.net, NET_HTTP_FIXED_HELD_URL);
+  err = network_open(url, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("held-peer GET opens", err == FN_ERR_OK);
+  r = network_read(url, body, sizeof(body));
+  bw = 0; conn = 0; nerr = 0;
+  err = network_status(url, &bw, &conn, &nerr);
+  close_err = network_close(url);
+  TEST("decoded body has exactly 3 bytes", r == 3);
+  TEST("decoded body equals ABC", memcmp(body, "ABC", 3) == 0);
+  TEST("completion STATUS succeeds", err == FN_ERR_OK);
+  TEST("no bytes remain", bw == 0);
+  TEST("HTTP transaction completed", conn == 0);
+  TEST("completion is EOF, not timeout", nerr == NETWORK_ERROR_END_OF_FILE);
+  TEST("held-peer GET closes", close_err == FN_ERR_OK);
+  END_OF_TEST();
+}
+
+void test_network_http_chunked_completion(void)
+{
+  uint8_t err, conn, nerr, close_err;
+  uint16_t bw;
+  int16_t r;
+  uint8_t body[4];
+  const char *url = (const char *) g.net;
+
+  SECTION("HTTP chunked held-peer completion");
+  memset(g.net, 0, MAX_FILENAME_LEN);
+  strcpy((char *) g.net, NET_HTTP_CHUNKED_HELD_URL);
+  err = network_open(url, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("held-peer GET opens", err == FN_ERR_OK);
+  r = network_read(url, body, sizeof(body));
+  bw = 0; conn = 0; nerr = 0;
+  err = network_status(url, &bw, &conn, &nerr);
+  close_err = network_close(url);
+  TEST("decoded body has exactly 3 bytes", r == 3);
+  TEST("decoded body equals ABC", memcmp(body, "ABC", 3) == 0);
+  TEST("completion STATUS succeeds", err == FN_ERR_OK);
+  TEST("no bytes remain", bw == 0);
+  TEST("HTTP transaction completed", conn == 0);
+  TEST("completion is EOF, not timeout", nerr == NETWORK_ERROR_END_OF_FILE);
+  TEST("held-peer GET closes", close_err == FN_ERR_OK);
+  END_OF_TEST();
+}
+
+/* The parse must not wait for the peer to close (fujinet-firmware#1416). */
+static void json_held(const char *spec)
+{
+  uint8_t err;
+  int16_t n;
+  char value[16];
+  const char *url = (const char *) g.net;
+
+  memset(g.net, 0, MAX_FILENAME_LEN);
+  strcpy((char *) g.net, spec);
+  err = network_open(url, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("held-peer GET opens", err == FN_ERR_OK);
+  err = network_json_parse(url);
+  TEST("JSON parse succeeds", err == FN_ERR_OK);
+  memset(value, 0, sizeof(value));
+  n = network_json_query(url, "/a", value);
+  TEST("query /a returns 1", n == 1 && strcmp(value, "1") == 0);
+  err = network_close(url);
+  TEST("held-peer GET closes", err == FN_ERR_OK);
+}
+
+void test_network_json_fixed_held(void)
+{
+  SECTION("JSON parse, fixed held-peer");
+#ifdef FN_BROKEN_network_json_query
+  SKIP(network_json_query);
+#else
+  json_held(NET_JSON_FIXED_HELD_URL);
+#endif
+  END_OF_TEST();
+}
+
+void test_network_json_chunked_held(void)
+{
+  SECTION("JSON parse, chunked held-peer");
+#ifdef FN_BROKEN_network_json_query
+  SKIP(network_json_query);
+#else
+  json_held(NET_JSON_CHUNKED_HELD_URL);
+#endif
+  END_OF_TEST();
+}
+
+/* STATUS alone must not mistake a 304 representation length for readable
+ * body bytes. Poison both reply storage and outputs to reject stale zeros.
+ * The poll cap bounds observations, not the duration of a bus call.
+ * Terminal error codes and CLOSE results are outside this check. */
+void test_network_http_304(void)
+{
+  uint8_t open_err, err, conn, nerr, poll;
+  uint16_t bw;
+  const char *url = (const char *) g.net;
+
+  SECTION("HTTP 304 no readable body");
+  memset(g.net, 0, MAX_FILENAME_LEN);
+  strcpy((char *) g.net, NET_HTTP_304_URL);
+  bw = 0xFFFF; conn = 0xFF; nerr = 0xFF; err = 0xFF;
+  open_err = network_open(url, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  if (open_err == FN_ERR_OK) {
+    for (poll = 0; poll < 100; ++poll) {
+      nw_status.avail = 0xFFFF;
+      nw_status.status = 0xFF;
+      nw_status.errcode = 0xFF;
+      bw = 0xFFFF; conn = 0xFF; nerr = 0xFF;
+      err = network_status(url, &bw, &conn, &nerr);
+      if (err != FN_ERR_OK || bw != 0 || conn != 1) {
+        break;
+      }
+    }
+  }
+  network_close(url);
+  printf("STATUS rc=%u avail=%u\n", err, bw);
+  printf("STATUS state=%u error=%u\n", conn, nerr);
+  TEST("HTTP 304 opens", open_err == FN_ERR_OK);
+  TEST("HTTP 304 STATUS succeeds", err == FN_ERR_OK);
+  TEST("HTTP 304 avail is zero", bw == 0);
+  TEST("HTTP 304 completed", conn == 0);
+  END_OF_TEST();
+}
+
+/* Calendar time is not monotonic; undetected SNTP/TZ changes invalidate timing.
+ * Accept dates from 1900 through 2399 and at most one date transition. */
+static uint8_t http304_leap(uint16_t y)
+{
+  return y % 4 == 0 && (y % 100 != 0 || y % 400 == 0);
+}
+
+static uint8_t http304_day(const uint8_t *s, unsigned long *day)
+{
+  static const uint8_t months[12] = {31,28,31,30,31,30,31,31,30,31,30,31};
+  uint16_t y, previous;
+  uint8_t m, limit;
+  if (s[0] < 19 || s[0] > 23 || s[1] > 99 || s[2] < 1 || s[2] > 12 ||
+      s[4] > 23 || s[5] > 59 || s[6] > 59 || s[7] > 99) return 0;
+  y = (uint16_t)s[0] * 100U + s[1];
+  limit = months[s[2] - 1];
+  if (s[2] == 2 && http304_leap(y)) ++limit;
+  if (s[3] < 1 || s[3] > limit) return 0;
+  previous = y - 1;
+  *day = 365UL * previous + previous / 4 - previous / 100 + previous / 400;
+  for (m = 1; m < s[2]; ++m) {
+    *day += months[m - 1];
+    if (m == 2 && http304_leap(y)) ++*day;
+  }
+  *day += s[3] - 1;
+  return 1;
+}
+
+static unsigned long http304_time(const uint8_t *s)
+{
+  return (s[4] * 3600UL + s[5] * 60UL + s[6]) * 100UL + s[7];
+}
+
+static uint8_t http304_elapsed(const uint8_t *a, const uint8_t *b,
+                              unsigned long *cs)
+{
+  unsigned long da, db, ta, tb;
+  *cs = 0;
+  if (!http304_day(a, &da) || !http304_day(b, &db) ||
+      db < da || db - da > 1UL) return 0;
+  ta = http304_time(a);
+  tb = http304_time(b) + (db - da) * 8640000UL;
+  if (tb <= ta) return 0; /* reversed or frozen; never a zero-time PASS */
+  *cs = tb - ta;
+  return 1;
+}
+
+/* Eight wire bytes plus the library's success terminator at index 8. */
+static uint8_t http304_clock(uint8_t *s)
+{
+  memset(s, 0xFF, 9);
+  return clock_get_time(s, SIMPLE_BINARY_WITH_HUNDREDTHS) == FN_ERR_OK && s[8] == 0;
+}
+
+/* Assumes the endpoint returns 304 and holds the peer open.
+ * STATUS cannot verify the response code or the peer's hold interval. */
+void test_network_http_304_completion(void)
+{
+  uint8_t start[9], now[9], last[9];
+  uint8_t open_err, status_err, close_err, conn, nerr, poll, result, clock_ok;
+  uint16_t bw;
+  unsigned long cs, step;
+  const char *url = (const char *) g.net;
+  const char *invalid = "endpoint/open unavailable";
+
+  SECTION("HTTP304 completion below 5 seconds");
+  memset(g.net, 0, MAX_FILENAME_LEN);
+  strcpy((char *) g.net, NET_HTTP_304_HELD_URL);
+  status_err = conn = nerr = 0xFF; bw = 0xFFFF;
+  result = 0; cs = 0;
+  open_err = network_open(url, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  if (open_err == FN_ERR_OK) {
+    clock_ok = http304_clock(start);
+    memcpy(last, start, sizeof(last));
+    invalid = "clock call/reply invalid";
+    if (clock_ok) {
+      for (poll = 0; poll < 100; ++poll) {
+        bw = 0xFFFF; conn = nerr = 0xFF;
+        nw_status.avail = 0xFFFF; nw_status.status = nw_status.errcode = 0xFF;
+        /* Keep one total budget, with no unrelated calls around STATUS. */
+        status_err = network_status(url, &bw, &conn, &nerr);
+        clock_ok = http304_clock(now);
+        invalid = "clock call/reply invalid";
+        if (!clock_ok) break;
+        invalid = "clock invalid/reversed/frozen";
+        if (!http304_elapsed(last, now, &step) ||
+            !http304_elapsed(start, now, &cs)) break;
+        invalid = "STATUS unavailable/malformed";
+        if (status_err != FN_ERR_OK || conn > 1) break;
+        if (cs >= 500UL) { result = 2; break; }
+        invalid = "ambiguous 5-second boundary";
+        if (cs + 1UL >= 500UL) break; /* reserve a centisecond */
+        if (conn == 0) { result = 1; break; }
+        memcpy(last, now, sizeof(last));
+        invalid = "pending observation cap reached";
+      }
+    }
+  }
+  /* Preserve local STATUS before cleanup; CLOSE may overwrite library state.
+   * Neither availability nor a particular network/CLOSE error decides timing. */
+  close_err = network_close(url);
+  printf("  OPEN=%u STATUS=%u avail=%u state=%u nerr=%u CLOSE=%u cs=%lu\n",
+         (unsigned)open_err, (unsigned)status_err, bw, (unsigned)conn,
+         (unsigned)nerr, (unsigned)close_err, cs);
+  if (!result) printf("  INVALID/INCONCLUSIVE: %s\n", invalid);
+  TEST("HTTP304 timing observation valid", result != 0);
+  TEST("HTTP304 terminal completion below 5 seconds", result == 1);
+  END_OF_TEST();
+}
+
+void test_network_http_get_nonblocking(void)
+{
+  uint8_t err;
+  uint16_t bw;
+  uint8_t conn;
+  uint8_t nerr;
+  uint16_t to_read;
+  int16_t nb_result;
+
+  SECTION("network HTTP GET non-blocking read");
+
+#ifdef FN_BROKEN_network_open
+  SKIP(network_open);
+#else
+  err = network_open(NET_DEVICESPEC, OPEN_MODE_HTTP_GET, OPEN_TRANS_LF);
+  TEST("network_open (GET, nb) returns FN_ERR_OK", err == FN_ERR_OK);
+#endif
+
+  bw = 0; conn = 0; nerr = 0;
+#ifdef FN_BROKEN_network_status
+  SKIP(network_status);
+#else
+  err = network_status(NET_DEVICESPEC, &bw, &conn, &nerr);
+  TEST("network_status (nb) succeeds", err == FN_ERR_OK);
+  printf("  bytes_waiting=%u conn=%u net_error=%u\n", bw, conn, nerr);
+  TEST("network no error", nerr == NETWORK_SUCCESS);
+#endif
+
+#ifdef FN_BROKEN_network_read_nb
+  SKIP(network_read_nb);
+#else
+  if (bw > 0) {
+    to_read = (bw < (uint16_t)sizeof(g.net))
+      ? bw : (uint16_t)sizeof(g.net);
+    memset(g.net, 0, sizeof(g.net));
+    nb_result = network_read_nb(NET_DEVICESPEC, g.net, to_read);
+    TEST("network_read_nb returns non-negative", nb_result >= 0);
+    printf("  NB read %d of %u waiting bytes\n", (int)nb_result, bw);
+  } else {
+    printf("  No bytes waiting yet; skipping non-blocking read assertion\n");
+  }
+#endif
+
+#ifdef FN_BROKEN_network_close
+  SKIP(network_close);
+#else
+  err = network_close(NET_DEVICESPEC);
+  TEST("network_close after nb-GET succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+void test_network_http_post(void)
+{
+  uint8_t err;
+  int16_t r;
+  static const uint8_t bin_data[] = { 0x01, 0x02, 0x03, 0xFF };
+
+  SECTION("network HTTP POST");
+
+#ifdef FN_BROKEN_network_open
+  SKIP(network_open);
+#else
+  err = network_open(NET_POST_URL, OPEN_MODE_HTTP_POST, OPEN_TRANS_NONE);
+  TEST("network_open (POST) returns FN_ERR_OK", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_post
+  SKIP(network_http_post);
+#else
+  err = network_http_post(NET_POST_URL, "{\"test\":\"fujinet_integration\"}");
+  TEST("network_http_post succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_read
+  SKIP(network_read);
+#else
+  memset(g.net, 0, sizeof(g.net));
+  r = network_read(NET_POST_URL, g.net, sizeof(g.net));
+  TEST("network_read after POST returns data", r > 0);
+#endif
+
+#ifdef FN_BROKEN_network_close
+  SKIP(network_close);
+#else
+  err = network_close(NET_POST_URL);
+  TEST("network_close after POST succeeds", err == FN_ERR_OK);
+
+  /* Binary POST variant */
+  err = network_open(NET_POST_URL, OPEN_MODE_HTTP_POST, OPEN_TRANS_NONE);
+  TEST("network_open for binary POST succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_post_bin
+  SKIP(network_http_post_bin);
+#else
+  err = network_http_post_bin(NET_POST_URL, bin_data, sizeof(bin_data));
+  TEST("network_http_post_bin succeeds", err == FN_ERR_OK);
+
+  memset(g.net, 0, sizeof(g.net));
+  r = network_read(NET_POST_URL, g.net, sizeof(g.net));
+  TEST("network_read after binary POST returns data", r > 0);
+
+  err = network_close(NET_POST_URL);
+  TEST("network_close after binary POST succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+#define LARGE_POST_LEN 1200
+static char large_post[LARGE_POST_LEN + 1];
+
+void test_network_http_post_large(void)
+{
+  uint8_t err;
+  int16_t n;
+  uint16_t bw;
+  uint8_t conn, nerr;
+
+  SECTION("network HTTP POST larger than a bus packet");
+
+#if defined(FN_BROKEN_network_http_post) || defined(FN_BROKEN_network_json_query)
+  SKIP(network_http_post_large);
+#else
+  memset(large_post, 'Q', LARGE_POST_LEN);
+  large_post[LARGE_POST_LEN] = '\0';
+
+  err = network_open(NET_POST_URL, OPEN_MODE_HTTP_POST, OPEN_TRANS_NONE);
+  TEST("network_open (POST) returns FN_ERR_OK", err == FN_ERR_OK);
+  /* A bus that copies the whole write into one fixed packet overruns it (#145). */
+  err = network_http_post(NET_POST_URL, large_post);
+  TEST("POST of 1200 bytes succeeds", err == FN_ERR_OK);
+
+  /* httpbin.dev echoes headers as arrays and an octet-stream body base64
+   * encoded, so check what it received. */
+  err = network_json_parse(NET_POST_URL);
+  TEST("network_json_parse of the echo succeeds", err == FN_ERR_OK);
+  memset(g.net, 0, sizeof(g.net));
+  n = network_json_query(NET_POST_URL, "/headers/Content-Length/0", (char *)g.net);
+  printf("  server received %s bytes\n", (char *)g.net);
+  TEST("server received all 1200 bytes", n > 0 && strcmp((char *)g.net, "1200") == 0);
+
+  bw = 0; conn = 0; nerr = 0;
+  err = network_status(NET_POST_URL, &bw, &conn, &nerr);
+  TEST("device still answers STATUS", err == FN_ERR_OK);
+
+  network_close(NET_POST_URL);
+#endif
+
+  END_OF_TEST();
+}
+
+void test_network_http_headers(void)
+{
+  uint8_t err;
+  int16_t r;
+
+  SECTION("network HTTP custom headers");
+
+#ifdef FN_BROKEN_network_open
+  SKIP(network_open);
+#else
+  err = network_open(NET_DEVICESPEC, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("network_open for header test succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_start_add_headers
+  SKIP(network_http_start_add_headers);
+#else
+  err = network_http_start_add_headers(NET_DEVICESPEC);
+  TEST("network_http_start_add_headers succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_add_header
+  SKIP(network_http_add_header);
+#else
+  err = network_http_add_header(NET_DEVICESPEC, "X-FujiNet-Test: integration");
+  TEST("network_http_add_header succeeds", err == FN_ERR_OK);
+
+  err = network_http_add_header(NET_DEVICESPEC, "Accept: text/html");
+  TEST("Second network_http_add_header succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_end_add_headers
+  SKIP(network_http_end_add_headers);
+#else
+  err = network_http_end_add_headers(NET_DEVICESPEC);
+  TEST("network_http_end_add_headers succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_read
+  SKIP(network_read);
+#else
+  memset(g.net, 0, sizeof(g.net));
+  r = network_read(NET_DEVICESPEC, g.net, sizeof(g.net));
+  TEST("network_read with custom headers returns data", r > 0);
+#endif
+
+#ifdef FN_BROKEN_network_close
+  SKIP(network_close);
+#else
+  err = network_close(NET_DEVICESPEC);
+  TEST("network_close after header test succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+void test_network_http_channel_mode(void)
+{
+  uint8_t err;
+
+  SECTION("network HTTP channel mode");
+
+#ifdef FN_BROKEN_network_open
+  SKIP(network_open);
+#else
+  err = network_open(NET_DEVICESPEC, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("network_open for channel mode test succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_set_channel_mode
+  SKIP(network_http_set_channel_mode);
+#else
+  err = network_http_set_channel_mode(NET_DEVICESPEC,
+                                      HTTP_CHAN_MODE_COLLECT_HEADERS);
+  TEST("network_http_set_channel_mode(COLLECT_HEADERS) succeeds", err == FN_ERR_OK);
+
+  err = network_http_set_channel_mode(NET_DEVICESPEC, HTTP_CHAN_MODE_BODY);
+  TEST("network_http_set_channel_mode(BODY) succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_close
+  SKIP(network_close);
+#else
+  err = network_close(NET_DEVICESPEC);
+  TEST("network_close after channel mode test succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+void test_network_json(void)
+{
+  uint8_t err;
+  char result[64];
+  int16_t n;
+  uint16_t bw;
+  uint8_t conn, nerr;
+
+  SECTION("network JSON parse and query");
+
+#ifdef FN_BROKEN_network_open
+  SKIP(network_open);
+#else
+  err = network_open(NET_JSON_URL, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("network_open for JSON succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_json_parse
+  SKIP(network_json_parse);
+#else
+  err = network_json_parse(NET_JSON_URL);
+  TEST("network_json_parse succeeds", err == FN_ERR_OK);
+#endif
+
+  bw = 0; conn = 0; nerr = 0;
+#ifdef FN_BROKEN_network_status
+  SKIP(network_status);
+#else
+  err = network_status(NET_DEVICESPEC, &bw, &conn, &nerr);
+  TEST("network_status after parse succeeds", err == FN_ERR_OK);
+  printf("  bytes_waiting=%u conn=%u net_error=%u\n", bw, conn, nerr);
+  TEST("network no error", nerr == NETWORK_SUCCESS || nerr == NETWORK_ERROR_END_OF_FILE);
+#endif
+
+#ifdef FN_BROKEN_network_json_query
+  SKIP(network_json_query);
+#else
+  memset(result, 0, sizeof(result));
+  n = network_json_query(NET_JSON_URL, "/slideshow/title", result);
+  TEST("network_json_query returns data", n > 0);
+  TEST("JSON query result non-empty", result[0] != '\0');
+  printf("  JSON /slideshow/title = %s\n", result);
+
+  /* After a match, so a stale count shows */
+  memset(result, 'X', sizeof(result));
+  n = network_json_query(NET_JSON_URL, "/slideshow/no_such_key", result);
+  printf("  JSON no match n=%d\n", (int) n);
+  TEST("JSON query with no match returns 0", n == 0);
+  TEST("JSON query with no match empties the buffer", result[0] == '\0');
+#endif
+
+#ifdef FN_BROKEN_network_close
+  SKIP(network_close);
+#else
+  err = network_close(NET_JSON_URL);
+  TEST("network_close after JSON succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+/* httpbin's /get echoes its arguments back as JSON */
+#define NET_SGML_URL "N1:" HTTPBIN_BASE "/get" \
+  "?a=I%20%3C3%20FujiNet" \
+  "&b=a%20%3E%20b%20%3Ci%3Ec%3C%2Fi%3E%20d" \
+  "&c=%3Cp%3EHello%20%3Cb%3Eworld%3C%2Fb%3E%3C%2Fp%3E" \
+  "&d=I%20%3C3%20%3Cb%3EFujiNet%3C%2Fb%3E"
+
+static bool json_stripped(const char *query, const char *want)
+{
+  static char result[64];
+  int16_t n;
+
+  memset(result, 0, sizeof(result));
+  n = network_json_query(NET_SGML_URL, query, result);
+  printf("  %s = %s\n", query, result);
+  return n == (int16_t) strlen(want) && strcmp(result, want) == 0;
+}
+
+void test_network_json_strip_tags(void)
+{
+  uint8_t err;
+
+  SECTION("JSON query with SGML tags stripped");
+
+#if defined(FN_BROKEN_network_json_parse) || defined(FN_BROKEN_network_json_query) \
+ || defined(FN_BROKEN_network_set_query_param)
+  SKIP(network_set_query_param);
+#else
+  err = network_open(NET_SGML_URL, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("open succeeds", err == FN_ERR_OK);
+  err = network_json_parse(NET_SGML_URL);
+  TEST("network_json_parse succeeds", err == FN_ERR_OK);
+  err = network_set_query_param(NET_SGML_URL, QUERY_DELETE_SGML_TAGS);
+  TEST("the strip-tags flag is accepted", err == FN_ERR_OK);
+
+  /* First, so firmware that hangs on an unclosed '<' fails here instead */
+  TEST("a stray '>' is kept", json_stripped("/args/b", "a > b c d"));
+  TEST("nested tags are removed", json_stripped("/args/c", "Hello world"));
+  TEST("an unclosed '<' is kept", json_stripped("/args/a", "I <3 FujiNet"));
+  TEST("an unclosed '<' before a tag is kept", json_stripped("/args/d", "I <3 FujiNet"));
+
+  err = network_close(NET_SGML_URL);
+  TEST("close succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+void test_network_http_put_plain(void)
+{
+  uint8_t err;
+  int16_t r;
+
+  SECTION("network HTTP PUT without headers");
+
+#ifdef FN_BROKEN_network_open
+  SKIP(network_open);
+#else
+  err = network_open(NET_PUT_URL, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
+  TEST("network_open (plain PUT) succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_put
+  SKIP(network_http_put);
+#else
+  err = network_http_put(NET_PUT_URL, "fujinet=put_test");
+  TEST("network_http_put succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_read
+  SKIP(network_read);
+#else
+  /* The calls above report success even when the body never reaches the
+   * server, so the response is what proves the request was sent. */
+  memset(g.net, 0, sizeof(g.net));
+  r = network_read(NET_PUT_URL, g.net, sizeof(g.net));
+  TEST("network_read after plain PUT returns data", r > 0);
+#endif
+
+#ifdef FN_BROKEN_network_close
+  SKIP(network_close);
+#else
+  err = network_close(NET_PUT_URL);
+  TEST("network_close after plain PUT succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+/* A CLOSE that fails keeps failing until the next OPEN, so a repeated CLOSE,
+ * like the Atari's automatic SIO retry, can't report the upload as done
+ * (fujinet-firmware#1769). */
+void test_network_close_failure_sticks(void)
+{
+  uint8_t err;
+  uint16_t bw;
+  uint8_t conn, nerr;
+
+  SECTION("network_close of a rejected PUT keeps failing");
+
+#if defined(FN_BROKEN_network_http_put) || defined(FN_BROKEN_network_close) \
+ || defined(FN_BROKEN_transaction_error)
+  SKIP(network_close_failure_sticks);
+#else
+  err = network_open(NET_FORBIDDEN_URL, OPEN_MODE_HTTP_PUT, OPEN_TRANS_NONE);
+  TEST("network_open of the forbidden PUT succeeds", err == FN_ERR_OK);
+  err = network_http_put(NET_FORBIDDEN_URL, "fujinet=forbidden");
+  TEST("network_http_put succeeds", err == FN_ERR_OK);
+
+  err = network_close(NET_FORBIDDEN_URL);
+  TEST("the first close reports the 403", err != FN_ERR_OK);
+  err = network_close(NET_FORBIDDEN_URL);
+  TEST("a repeated close still reports it", err != FN_ERR_OK);
+
+  bw = 0; conn = 0; nerr = 0;
+  network_status(NET_FORBIDDEN_URL, &bw, &conn, &nerr);
+  printf("  STATUS error %u\n", nerr);
+  /* FujiNet reports an HTTP 403 as 212. */
+  TEST("STATUS reports why",
+       nerr == NETWORK_ERROR_INVALID_USERNAME_OR_PASSWORD);
+
+  err = network_open(NET_DEVICESPEC, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("the next open on the unit succeeds", err == FN_ERR_OK);
+  err = network_close(NET_DEVICESPEC);
+  TEST("and its close succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}
+
+void test_network_http_put_delete(void)
+{
+  uint8_t err;
+  int16_t r;
+
+  SECTION("network HTTP PUT and DELETE");
+
+#ifdef FN_BROKEN_network_open
+  SKIP(network_open);
+#else
+  err = network_open(NET_PUT_URL, OPEN_MODE_HTTP_PUT_H, OPEN_TRANS_NONE);
+  TEST("network_open (PUT) succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_add_header
+  SKIP(network_http_add_header);
+#else
+  err = network_http_start_add_headers(NET_PUT_URL);
+  TEST("network_http_start_add_headers succeeds", err == FN_ERR_OK);
+  err = network_http_add_header(NET_PUT_URL, "Content-Type: application/json");
+  TEST("network_http_add_header succeeds", err == FN_ERR_OK);
+  err = network_http_end_add_headers(NET_PUT_URL);
+  TEST("network_http_end_add_headers succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_put
+  SKIP(network_http_put);
+#else
+  err = network_http_put(NET_PUT_URL, "{\"test\":\"fujinet_put\"}");
+  TEST("network_http_put succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_json_query
+  SKIP(network_json_query);
+#else
+  /* /put answers anything but a PUT with 405, so the echo proves the method
+   * (fujinet-firmware#999). httpbin.dev echoes headers as arrays. */
+  err = network_json_parse(NET_PUT_URL);
+  TEST("network_json_parse of the echo succeeds", err == FN_ERR_OK);
+  memset(g.net, 0, sizeof(g.net));
+  r = network_json_query(NET_PUT_URL, "/json/test", (char *)g.net);
+  TEST("server received the JSON body",
+       r > 0 && strcmp((char *)g.net, "fujinet_put") == 0);
+  memset(g.net, 0, sizeof(g.net));
+  r = network_json_query(NET_PUT_URL, "/headers/Content-Type/0", (char *)g.net);
+  TEST("server received the Content-Type header",
+       r > 0 && strcmp((char *)g.net, "application/json") == 0);
+#endif
+
+#ifdef FN_BROKEN_network_close
+  SKIP(network_close);
+#else
+  err = network_close(NET_PUT_URL);
+  TEST("network_close after PUT succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_http_delete
+  SKIP(network_http_delete);
+#else
+  err = network_http_delete(NET_DELETE_URL, OPEN_TRANS_NONE);
+  TEST("network_http_delete succeeds", err == FN_ERR_OK);
+#endif
+
+#ifdef FN_BROKEN_network_read
+  SKIP(network_read);
+#else
+  memset(g.net, 0, sizeof(g.net));
+  r = network_read(NET_DELETE_URL, g.net, sizeof(g.net));
+  TEST("network_read after DELETE returns data", r > 0);
+
+  err = network_close(NET_DELETE_URL);
+  TEST("network_close after DELETE succeeds", err == FN_ERR_OK);
+#endif
+
+  END_OF_TEST();
+}

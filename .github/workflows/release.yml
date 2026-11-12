@@ -1,0 +1,99 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: # allows manual run too
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: zipify
+    runs-on: ubuntu-latest
+    container:
+      image: fozztexx/defoogi:1.4.8
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify version matches tag
+        shell: bash
+        run: |
+          # Extract the version string inside the quotes from the FULL macro
+          FILE_VERSION=$(grep 'FNLIB_VERSION_FULL' include/fujinet-version.h | sed -E 's/.*"([^"]+)".*/\1/')
+          TAG_VERSION="${{ github.ref_name }}"
+
+          echo "File Version: $FILE_VERSION"
+          echo "Git Tag:      $TAG_VERSION"
+
+          if [ "$FILE_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error:: Mismatch detected! include/fujinet-version.h is set to '$FILE_VERSION' but the triggered tag is '$TAG_VERSION'."
+            exit 1
+          fi
+
+      - name: Verify changelog has a section for this tag
+        run: python3 .github/scripts/changelog-notes.py "${{ github.ref_name }}" > /dev/null
+
+      - name: Set version string
+        shell: bash
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            version="${{ github.ref_name }}"
+            echo "VERSION_STRING=${version#v}" >> "$GITHUB_ENV"
+          else
+            echo "VERSION_STRING=${GITHUB_SHA:0:7}" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build release files
+        run: make release
+
+      - name: Upload release folder for next job
+        uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release/
+
+  tagged-release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release
+          path: release
+
+      - name: Write release notes from changelog
+        run: |
+          {
+            echo "Release ${{ github.ref_name }}"
+            echo
+            echo "---"
+            echo
+            python3 .github/scripts/changelog-notes.py "${{ github.ref_name }}"
+          } > release-notes.md
+
+      - name: Generate random release name
+        id: random_name
+        run: |
+          RANDOM_NAME=$(docker run --rm fnichol/names)
+          echo "name=$RANDOM_NAME" >> $GITHUB_OUTPUT
+          echo "Generated release name: $RANDOM_NAME"
+
+      - name: Create GitHub Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ steps.random_name.outputs.name }} (${{ github.ref_name }})
+          draft: false
+          prerelease: false
+          body_path: release-notes.md
+          files: release/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

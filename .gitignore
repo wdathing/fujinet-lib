@@ -1,15 +1,72 @@
-# generated files
-dist/
-obj/
-build/
+# Prerequisites
+*.d
 
-# IDE files
-.vscode/
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
 
-Makefile.options
+# Linker output
+*.ilk
+*.map
+*.exp
 
-_temp
-*.err
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+*.lnx
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+
+*_obj
+.AppleDouble
+*.dsk
+*.img
+*.po
+*.do
+*.atr
 *~
+\#*
+test
+test.*
+!test.c
 *.orig
 *.rej
+_cache/
+build/
+r2r/
+/release/

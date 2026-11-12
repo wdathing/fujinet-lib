@@ -1,0 +1,335 @@
+/* =========================================================================
+ * Minimal test harness
+ * ========================================================================= */
+
+#ifndef GIT_VERSION
+#  error "Need GIT_VERSION"
+#endif
+
+#include "broken.h"
+
+#include "harness.h"
+#include "globals.h"
+#include <fujinet-clock.h>
+
+#ifdef _CMOC_VERSION_
+#include <coco.h>
+#else
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#endif /* _CMOC_VERSION_ */
+
+#ifdef BUILD_C64
+#include "c64_find_load.h"
+#endif /* BUILD_C64 */
+
+#if defined(__CC65__) || defined(__WATCOMC__) || defined(FUJI_PLATFORM_ADAM)
+#include <conio.h>
+#endif /* __CC65__ || __WATCOMC__ || FUJI_PLATFORM_ADAM */
+#ifdef __C64__
+#include <c64.h>
+#endif /* __C64__ */
+#ifdef __WATCOMC__
+#include <i86.h>
+#endif /* __WATCOMC__ */
+
+#ifdef BUILD_APPLE2
+extern const char *computer_model();
+#endif /* BUILD_APPLE2 */
+
+int tests_run     = 0;
+int tests_passed  = 0;
+int tests_skipped = 0;
+int tests_failed  = 0;
+
+void begin_testing()
+{
+  tests_run = tests_passed = tests_skipped = tests_failed = 0;
+}
+
+#ifndef BUILD_LYNX
+/* Only SPACE or ENTER ends the run, so a screenshot shortcut or a stray
+ * modifier cannot (#156). The Lynx has no keyboard and keeps any key. */
+static bool exit_key(int k)
+{
+  return k == ' ' || k == '\r' || k == '\n'
+#ifdef CH_ENTER
+    || k == CH_ENTER
+#endif
+    ;
+}
+#endif /* BUILD_LYNX */
+
+void end_testing(int code)
+{
+#ifdef BUILD_LYNX
+  printf("Press any key to exit\n");
+  cgetc();
+#else
+  int k;
+
+  printf("Press SPACE or ENTER to exit\n");
+  do {
+#if defined(_CMOC_VERSION_)
+    k = inkey();
+#elif defined(__CC65__)
+    k = cgetc();
+#elif defined(__WATCOMC__)
+    k = getch();
+#elif defined(__Z88DK)
+    k = fgetc_cons();
+#else /* everything else */
+    k = getc(stdin);
+#endif /* _CMOC_VERSION_ */
+  } while (!exit_key(k));
+#endif /* BUILD_LYNX */
+
+#if defined(_CMOC_VERSION_)
+  /* Back to the ROM's colors, which the menu expects in these slots */
+  if (isCoCo3) {
+    palette(2, 9);
+    palette(11, 63);
+    palette(12, 0);
+  }
+#endif /* _CMOC_VERSION_ */
+
+#ifdef BUILD_C64
+  // The LOAD command is ridiculously long, reprint it if we can so
+  // the user can arrow up and push return instead of retyping it.
+  if (c64_load_command[0])
+    printf("  %s\n", c64_load_command);
+  else
+    c64_queue_menu();
+#endif /* BUILD_C64 */
+
+  exit(code);
+}
+
+#define HL_GREEN  1
+#define HL_YELLOW 2
+#define HL_RED    3
+
+/* Pass, clean ID and the all-passed line green; dirty or missing ID yellow;
+ * fail and the abort line red (#96). Yellow is also inverse wherever the
+ * screen can do it (#241): dark on yellow on the CoCo 3, C64, Adam and
+ * MS-DOS in color; Atari, Apple II, the H89 terminal and MS-DOS in the
+ * monochrome text mode show yellow and red as inverse video. The Atari 5200
+ * has no inverse video: its yellow is palette slot 3 (init_video.c). */
+void tprint(uint8_t what, const char *s)
+{
+  uint8_t hl;
+
+  switch (what) {
+  case TP_PASS: case TP_ALL_PASSED: case TP_ID_CLEAN: hl = HL_GREEN; break;
+  case TP_ID_DIRTY: hl = HL_YELLOW; break;
+  case TP_FAIL: case TP_ABORTED: hl = HL_RED; break;
+  default: hl = 0; break;
+  }
+  if (!hl) {
+    printf("%s", s);
+    return;
+  }
+#if defined(_CMOC_VERSION_)
+  if (isCoCo3) {
+    /* Foreground slots 9, 11 and 12, background slot 2, set in init_video() */
+    if (hl == HL_YELLOW)
+      attr(3, 2, 0, 0);
+    else
+      attr(hl == HL_GREEN ? 1 : 4, 0, 0, 0);
+    printf("%s", s);
+    attr(0, 0, 0, 0);
+  } else
+    printf("%s", s);
+#elif defined(__C64__)
+  {
+    unsigned char old = textcolor(hl == HL_GREEN ? COLOR_GREEN
+                                  : hl == HL_YELLOW ? COLOR_YELLOW : COLOR_RED);
+
+    /* PETSCII RVS ON/OFF: printf goes through the KERNAL, not conio */
+    if (hl == HL_YELLOW)
+      printf("\x12%s\x92", s);
+    else
+      printf("%s", s);
+    textcolor(old);
+  }
+#elif defined(FUJI_PLATFORM_ADAM)
+  /* conio's PC color numbers: 0 black, 2 green, 14 yellow, 4 red, 15 white */
+  if (hl == HL_YELLOW) {
+    textbackground(14);
+    textcolor(0);
+  } else
+    textcolor(hl == HL_GREEN ? 2 : 4);
+  printf("%s", s);
+  textbackground(0);
+  textcolor(15);
+#elif defined(__WATCOMC__)
+  {
+    union REGS r, q;
+    uint8_t row, col, attr, cols, bottom;
+
+    fflush(stdout);
+    r.h.ah = 0x0F;
+    int86(0x10, &r, &r);
+    if (r.h.al == 7)
+      attr = hl == HL_GREEN ? 0x07 : 0x70;
+    else {
+      /* Bit 7 of an attribute selects a bright background, not blink */
+      q.x.ax = 0x1003; q.h.bl = 0;
+      int86(0x10, &q, &q);
+      attr = hl == HL_GREEN ? 0x0A : hl == HL_YELLOW ? 0xE0 : 0x0C;
+    }
+    cols = r.h.ah;
+    r.h.ah = 3; r.h.bh = 0;
+    int86(0x10, &r, &r);
+    row = r.h.dh; col = r.h.dl;
+    /* The BIOS fills a scrolled-in line with the attribute under the
+     * cursor, which "\n"'s CR leaves on this text at column 0. */
+    bottom = *(uint8_t __far *) MK_FP(0x40, 0x84);
+    if (!bottom)
+      bottom = 24;
+    if (row >= bottom) {
+      r.x.ax = 0x0601; r.h.bh = 0x07; r.x.cx = 0;
+      r.h.dh = bottom; r.h.dl = cols - 1;
+      int86(0x10, &r, &r);
+      row = bottom - 1;
+    }
+    for (; *s; s++, col++) {
+      r.h.ah = 2; r.h.bh = 0; r.h.dh = row; r.h.dl = col;
+      int86(0x10, &r, &r);
+      r.h.ah = 9; r.h.al = *s; r.h.bh = 0; r.h.bl = attr; r.x.cx = 1;
+      int86(0x10, &r, &r);
+    }
+    r.h.ah = 2; r.h.bh = 0; r.h.dh = row; r.h.dl = col;
+    int86(0x10, &r, &r);
+  }
+#elif defined(FUJI_PLATFORM_ATARI5200)
+  {
+    /* cc65 has no yellow: slot 3 is its COLOR_BLACK, which init_video() sets to yellow */
+#define COLOR_YELLOW COLOR_BLACK
+    unsigned char old = textcolor(hl == HL_GREEN ? COLOR_GREEN
+                                  : hl == HL_YELLOW ? COLOR_YELLOW : COLOR_RED);
+
+    printf("%s", s);
+    textcolor(old);
+  }
+#elif defined(__ATARI__)
+  for (; *s; s++)
+    putchar(hl == HL_GREEN ? *s : (*s | 0x80));
+#elif defined(__APPLE2__)
+  if (hl != HL_GREEN)
+    *(uint8_t *) 0x32 = 0x3F;
+  printf("%s", s);
+  *(uint8_t *) 0x32 = 0xFF;
+#elif defined(FUJI_PLATFORM_H89)
+  if (hl != HL_GREEN)
+    printf("\x1bp%s\x1bq", s);
+  else
+    printf("%s", s);
+#else
+  printf("%s", s);
+#endif
+}
+
+/* A hex commit, alone or after the last '-' (v1.6-43f031e7, n2026.297-ac25). */
+static uint8_t has_commit_id(const char *id)
+{
+  const char *p = strrchr(id, '-');
+  char c;
+
+  p = p ? p + 1 : id;
+  if (!*p || *p == '*')
+    return 0;
+  for (; *p && *p != '*'; p++) {
+    /* Bytes, not 'a'-'f': the firmware sends ASCII, and cc65's C64 'a' is 0x41 */
+    c = *p | 0x20;
+    if (!((c >= 0x30 && c <= 0x39) || (c >= 0x61 && c <= 0x66)))
+      return 0;
+  }
+  return 1;
+}
+
+/* The commit IDs: green when clean, yellow when dirty or missing. */
+static void print_id(const char *label, const char *id)
+{
+  printf("%s", label);
+  tprint(has_commit_id(id) && !strchr(id, '*') ? TP_ID_CLEAN : TP_ID_DIRTY, id);
+  printf("\n");
+}
+
+void print_versions()
+{
+  int width, width2;
+
+
+  strcpy(g.adapter.ace.fn_version, "BROKEN");
+#ifndef FN_BROKEN_fuji_get_adapter_config_extended
+  if (!fuji_get_adapter_config_extended(&g.adapter.ace))
+    strcpy(g.adapter.ace.fn_version, "FAIL");
+#endif
+  print_id("FujiNet: ", g.adapter.ace.fn_version);
+
+  width = strlen(FNLIB_VERSION_FULL);
+  width2 = strlen(test_program);
+  if (width2 > width)
+    width = width2;
+
+  printf("    lib: %-*s  ", width, FNLIB_VERSION_FULL);
+  print_id("", GIT_VERSION);
+
+  printf("   test: %-*s  ", width, test_program);
+#ifdef BUILD_APPLE2
+  printf("%s\n", computer_model());
+#else
+  printf("%s\n", PLATFORM);
+#endif /* BUILD_APPLE2 */
+
+  strcpy((char *) g.clock_fmt, "TIME BROKEN");
+#if !defined(FN_BROKEN_clock_get_time_UTC_ISO_STRING)
+  if (clock_get_time(g.clock_fmt, UTC_ISO_STRING) != FN_ERR_OK)
+    strcpy((char *) g.clock_fmt, "TIME FAIL");
+#elif !defined(FN_BROKEN_fuji_get_time)
+  if (fuji_get_time(g.clock_fmt)) {
+    int year, month, day, hour, minute, second;
+    year = g.clock_fmt[0] * 100 + g.clock_fmt[1];
+    month = g.clock_fmt[2];
+    day = g.clock_fmt[3];
+    hour = g.clock_fmt[4];
+    minute = g.clock_fmt[5];
+    second = g.clock_fmt[6];
+    sprintf(g.clock_fmt, "%04d-%02d-%02dT%02d:%02d:%02d",
+            year, month, day, hour, minute, second);
+  }
+  else
+    strcpy((char *) g.clock_fmt, "TIME FAIL");
+#endif
+  printf("%s\n", (char *)g.clock_fmt);
+
+  return;
+}
+
+void test_check(uint8_t ok, const char *name, int line)
+{
+  tests_run++;
+  if (ok) {
+    tprint(TP_PASS, "PASS");
+    printf("  %s\n", name);
+    tests_passed++;
+  } else {
+    tprint(TP_FAIL, "FAIL");
+    printf("  %s  (line %d)\n", name, line);
+    tests_failed++;
+    test_abort();
+  }
+}
+
+void test_abort(void)
+{
+  printf("\n");
+  tprint(TP_ABORTED, "*** ABORTED after first failure ***");
+  printf("\n");
+  printf("=== Results: %d passed, %d skipped, %d failed, %d total ===\n",
+         tests_passed, tests_skipped, tests_failed, tests_run);
+  print_versions();
+  end_testing(1);
+}

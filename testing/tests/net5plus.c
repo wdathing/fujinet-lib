@@ -1,0 +1,508 @@
+/**
+ * @file net5plus.c
+ * @brief Coverage for the network device commands added in fujinet-lib v5:
+ *        seek/tell, translation, login, timer rate, TCP accept and
+ *        close-client, UDP destination/remote, channel mode and read count.
+ *
+ * Firmware regression commits exercised here (fujinet-firmware):
+ *   b8d67c34c  [sio] note/point            -> test_net2_seek_tell, test_net2_seek_errors
+ *   a1c8d9dfe  [sio] sticky NTRANS         -> test_net2_set_translation (wire accept only;
+ *                                             full translation observation is manual)
+ *   e04b1759a  [coco] $54 arm removed      -> FN_BROKEN_network_set_translation on coco
+ *   a720672e2  [iwm] login propagation     -> test_net2_login_smoke (authenticated open
+ *                                             needs private credentials: manual)
+ *   e2699b33a / 94517bf9a / 90279b566 UDP  -> test_net2_udp_set_destination,
+ *                                             test_net2_udp_get_remote (FujiNet-PC only)
+ *   0b59791ee  [coco] read count           -> netproto.c
+ *   a04e87296  short TCP read keeps data   -> test_net2_short_read
+ *   313a24845  TCP close-client result     -> test_net2_close_client
+ *   0885a7e48  second TCP accept refused   -> test_net2_accept
+ */
+
+#include "broken.h"
+
+#include "harness.h"
+#include "constants.h"
+#include "globals.h"
+#include <fujinet-network.h>
+#include <fujinet-clock.h>
+
+#ifndef _CMOC_VERSION_
+#include <stdio.h>
+#include <string.h>
+#endif /* _CMOC_VERSION_ */
+
+#define LISTEN_SOCKET "N1:TCP://:5432"
+#define CLIENT_SOCKET "N2:TCP://localhost:5432"
+#define CLIENT2_SOCKET "N3:TCP://localhost:5432"
+#define UDP_CLIENT "N2:UDP://localhost:5004"
+#define MAX_SOCKET_RETRIES 10
+#define DISCONNECT_POLLS 500
+#define RELAY_POLLS 500
+
+void test_net2_seek_tell(void)
+{
+  uint8_t err;
+  uint32_t pos;
+  int16_t r;
+  uint16_t i;
+
+  SECTION("network seek/tell (note/point)");
+
+#ifdef FN_BROKEN_network_seek
+  SKIP(network_seek);
+#else
+  err = network_open(NET_RANGE_URL, OPEN_MODE_READ, OPEN_TRANS_NONE);
+  TEST("open range URL", err == FN_ERR_OK);
+
+  r = network_read(NET_RANGE_URL, g.net, 16);
+  TEST("read 16 bytes", r == 16);
+  for (i = 0; i < 16; i++) {
+    if (g.net[i] != RANGE_BYTE(i))
+      break;
+  }
+  TEST("first 16 bytes match pattern", i == 16);
+
+  pos = 0xFFFFFFFF;
+  err = network_tell(NET_RANGE_URL, &pos);
+  TEST("tell returns FN_ERR_OK", err == FN_ERR_OK);
+  printf("  position=%lu\n", (unsigned long) pos);
+  TEST("tell reports position 16", pos == 16);
+
+  err = network_seek(NET_RANGE_URL, 256);
+  TEST("seek to 256 returns FN_ERR_OK", err == FN_ERR_OK);
+
+  pos = 0;
+  err = network_tell(NET_RANGE_URL, &pos);
+  TEST("tell after seek returns FN_ERR_OK", err == FN_ERR_OK);
+  TEST("tell reports position 256", pos == 256);
+
+  r = network_read(NET_RANGE_URL, g.net, 4);
+  TEST("read 4 bytes at offset 256", r == 4);
+  /* 256 % 26 == 22, so the bytes are w x y z */
+  TEST("data comes from the seeked offset",
+       g.net[0] == 'w' && g.net[1] == 'x' && g.net[2] == 'y' && g.net[3] == 'z');
+
+  err = network_close(NET_RANGE_URL);
+  TEST("close range URL", err == FN_ERR_OK);
+#endif /* FN_BROKEN_network_seek */
+
+  END_OF_TEST();
+}
+
+void test_net2_seek_errors(void)
+{
+  uint8_t err;
+
+  SECTION("network seek error paths");
+
+#ifdef FN_BROKEN_network_seek
+  SKIP(network_seek);
+#else
+  /* No channel open on N4 */
+  err = network_seek("N4:", 0);
+  TEST("seek on unopened channel fails", err != FN_ERR_OK);
+
+  /* Seek is PROTOCOL-mode only; in JSON mode it must fail */
+  err = network_open(NET_JSON_URL, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("open JSON URL", err == FN_ERR_OK);
+  err = network_json_parse(NET_JSON_URL);
+  TEST("parse JSON", err == FN_ERR_OK);
+  err = network_seek(NET_JSON_URL, 0);
+  TEST("seek in JSON channel mode fails", err != FN_ERR_OK);
+  err = network_close(NET_JSON_URL);
+  TEST("close JSON URL", err == FN_ERR_OK);
+#endif /* FN_BROKEN_network_seek */
+
+  END_OF_TEST();
+}
+
+/* A READ on a unit with no channel open fails on the bus, so it must not
+ * report data. The buffer's contents after a failure are unspecified. */
+void test_net2_bus_read_unopened(void)
+{
+  size_t r;
+
+  SECTION("network_bus_read on an unopened unit");
+
+  r = network_bus_read(FUJI_DEVICEID_NETWORK + network_unit("N4:") - 1, g.net, 16);
+  printf("  READ 16 returned %u\n", (unsigned) r);
+  TEST("failed READ returns 0", r == 0);
+
+  END_OF_TEST();
+}
+
+void test_net2_set_translation(void)
+{
+  uint8_t err;
+
+  SECTION("network set translation");
+
+#ifdef FN_BROKEN_network_set_translation
+  SKIP(network_set_translation);
+#else
+  /* Wire-level accept only. The sticky OR into subsequent opens
+   * (a1c8d9dfe) is observed manually: set 2, open with aux2 0, read a
+   * text resource, confirm LF translation. */
+  err = network_set_translation("N1:", OPEN_TRANS_LF);
+  TEST("set translation LF accepted", err == FN_ERR_OK);
+
+  err = network_set_translation("N1:", 0xFF);
+  TEST("set translation 0xFF (ignore aux2) accepted", err == FN_ERR_OK);
+
+  err = network_set_translation("N1:", OPEN_TRANS_NONE);
+  TEST("set translation restored to none", err == FN_ERR_OK);
+#endif /* FN_BROKEN_network_set_translation */
+
+  END_OF_TEST();
+}
+
+void test_net2_login_smoke(void)
+{
+  uint8_t err;
+
+  SECTION("network username/password");
+
+#ifdef FN_BROKEN_network_set_username
+  SKIP(network_set_username);
+#else
+  /* State-only: the values apply to the next open. An authenticated
+   * SMB/FTP open needs private credentials and is a manual test. */
+  err = network_set_username("N1:", "fujinet-test-user");
+  TEST("set username accepted", err == FN_ERR_OK);
+
+  err = network_set_password("N1:", "fujinet-test-pass");
+  TEST("set password accepted", err == FN_ERR_OK);
+
+  /* Clear them so later opens are not affected */
+  err = network_set_username("N1:", "");
+  TEST("clear username accepted", err == FN_ERR_OK);
+  err = network_set_password("N1:", "");
+  TEST("clear password accepted", err == FN_ERR_OK);
+#endif /* FN_BROKEN_network_login */
+
+  END_OF_TEST();
+}
+
+void test_net2_interrupt_rate(void)
+{
+  uint8_t err;
+
+  SECTION("network interrupt timer rate");
+
+#ifdef FN_BROKEN_network_set_interrupt_rate
+  SKIP(network_set_interrupt_rate);
+#else
+  err = network_set_interrupt_rate("N1:", 50);
+  TEST("set timer rate 50ms accepted", err == FN_ERR_OK);
+
+  err = network_set_interrupt_rate("N1:", 100);
+  TEST("restore timer rate 100ms accepted", err == FN_ERR_OK);
+#endif /* FN_BROKEN_network_set_interrupt_rate */
+
+  END_OF_TEST();
+}
+
+static uint8_t wait_disconnected(const char *net)
+{
+  uint16_t avail, polls;
+  uint8_t conn = 1, net_err;
+
+  for (polls = 0; polls < DISCONNECT_POLLS && conn; polls++)
+    if (network_status(net, &avail, &conn, &net_err) != FN_ERR_OK)
+      return 0;
+  return !conn;
+}
+
+void test_net2_close_client(void)
+{
+  uint8_t err, retries, status, net_err;
+  uint16_t avail;
+
+  SECTION("network TCP close-client");
+
+#ifdef FN_BROKEN_network_close_client
+  SKIP(network_close_client);
+#else
+  err = network_open(NET_TCP_LISTEN, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("open listening TCP channel", err == FN_ERR_OK);
+
+  /* No client has connected; closing the (absent) client connection
+   * must still complete cleanly */
+  err = network_close_client(NET_TCP_LISTEN);
+  TEST("close-client with no client completes", err == FN_ERR_OK);
+
+  err = network_close(NET_TCP_LISTEN);
+  TEST("close listening channel", err == FN_ERR_OK);
+
+  err = network_open(LISTEN_SOCKET, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("open listener for a live client", err == FN_ERR_OK);
+  err = network_open(CLIENT_SOCKET, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("client connects", err == FN_ERR_OK);
+  for (retries = 0; retries < MAX_SOCKET_RETRIES; retries++) {
+    err = network_status(LISTEN_SOCKET, &avail, &status, &net_err);
+    if (err != FN_ERR_OK || status == 1)
+      break;
+  }
+  err = network_accept(LISTEN_SOCKET);
+  TEST("accept the client", err == FN_ERR_OK);
+
+  err = network_close_client(LISTEN_SOCKET);
+  TEST("close-client on a live client succeeds", err == FN_ERR_OK);
+  TEST("listener no longer reports a connection", wait_disconnected(LISTEN_SOCKET));
+  TEST("client sees the connection close", wait_disconnected(CLIENT_SOCKET));
+
+  err = network_close_client(CLIENT_SOCKET);
+  TEST("close-client on a channel that is not listening fails", err != FN_ERR_OK);
+
+  network_close(CLIENT_SOCKET);
+  network_close(LISTEN_SOCKET);
+#endif /* FN_BROKEN_network_close_client */
+
+  END_OF_TEST();
+}
+
+void test_net2_udp_set_destination(void)
+{
+  uint8_t err;
+
+  SECTION("network UDP set destination");
+
+#ifdef FN_BROKEN_network_udp_set_destination
+  SKIP(network_udp_set_destination);
+#else
+  err = network_open(NET_UDP_SPEC, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("open UDP channel", err == FN_ERR_OK);
+
+  err = network_udp_set_destination(NET_UDP_DEST);
+  TEST("set UDP destination accepted", err == FN_ERR_OK);
+
+  err = network_close(NET_UDP_SPEC);
+  TEST("close UDP channel", err == FN_ERR_OK);
+#endif /* FN_BROKEN_network_udp_set_destination */
+
+  END_OF_TEST();
+}
+
+void test_net2_udp_get_remote(void)
+{
+  uint8_t err;
+
+  SECTION("network UDP get remote");
+
+#ifdef FN_BROKEN_network_udp_get_remote
+  SKIP(network_udp_get_remote);
+#else
+  /* FujiNet-PC only: receive a datagram first, then ask where it came
+   * from. Without inbound traffic just prove the command completes. */
+  err = network_open(NET_UDP_SPEC, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("open UDP channel", err == FN_ERR_OK);
+
+  memset(g.net, 0, sizeof(g.net));
+  err = network_udp_get_remote(NET_UDP_SPEC, (char *) g.net, MAX_FILENAME_LEN);
+  TEST("get remote completes", err == FN_ERR_OK);
+  printf("  remote=\"%s\"\n", (char *) g.net);
+
+  err = network_close(NET_UDP_SPEC);
+  TEST("close UDP channel", err == FN_ERR_OK);
+#endif /* FN_BROKEN_network_udp_get_remote */
+
+  END_OF_TEST();
+}
+
+void test_net2_udp_round_trip(void)
+{
+  uint8_t err, status, net_err;
+  uint16_t avail = 0, polls;
+
+  SECTION("network UDP round trip");
+
+  err = network_open(NET_UDP_SPEC, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("open UDP listener", err == FN_ERR_OK);
+  err = network_open(UDP_CLIENT, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("open UDP client", err == FN_ERR_OK);
+
+  err = network_write(UDP_CLIENT, "FUJI", 4);
+  TEST("client sends a datagram", err == FN_ERR_OK);
+
+  /* Before fujinet-firmware #2270 the first status moved the datagram into
+   * the firmware's buffer and every status reported the empty socket */
+  for (polls = 0; polls < RELAY_POLLS; polls++) {
+    err = network_status(NET_UDP_SPEC, &avail, &status, &net_err);
+    if (err != FN_ERR_OK || avail)
+      break;
+  }
+  TEST("status reports the datagram's bytes waiting",
+       err == FN_ERR_OK && avail == 4);
+
+  memset(g.net, 0, 4);
+  TEST("read returns the datagram",
+       network_read(NET_UDP_SPEC, g.net, 4) == 4 && memcmp(g.net, "FUJI", 4) == 0);
+
+  network_close(UDP_CLIENT);
+  network_close(NET_UDP_SPEC);
+
+  END_OF_TEST();
+}
+
+void test_net2_channel_mode(void)
+{
+  uint8_t err;
+  int16_t r;
+
+  SECTION("network channel mode transitions");
+
+#ifdef FN_BROKEN_network_set_parser
+  SKIP(network_set_parser);
+#else
+  err = network_open(NET_JSON_URL, OPEN_MODE_HTTP_GET, OPEN_TRANS_NONE);
+  TEST("open JSON URL", err == FN_ERR_OK);
+
+  err = network_set_parser(NET_JSON_URL, PARSER_JSON);
+  TEST("switch to JSON channel mode", err == FN_ERR_OK);
+
+  err = network_set_parser(NET_JSON_URL, PARSER_NONE);
+  TEST("switch back to PROTOCOL mode", err == FN_ERR_OK);
+
+  /* The body must still be readable after the round trip */
+  r = network_read(NET_JSON_URL, g.net, 64);
+  TEST("read body after mode round trip", r > 0);
+
+  err = network_close(NET_JSON_URL);
+  TEST("close JSON URL", err == FN_ERR_OK);
+#endif /* FN_BROKEN_network_set_parser */
+
+  END_OF_TEST();
+}
+
+
+/* Bounded: a listener whose session was swapped stays connected with
+ * nothing to read. */
+static uint8_t relay_byte(char c)
+{
+  uint16_t avail = 0, polls;
+  uint8_t status, net_err;
+
+  if (network_write(CLIENT_SOCKET, &c, 1) != FN_ERR_OK)
+    return 0;
+  for (polls = 0; polls < RELAY_POLLS; polls++) {
+    if (network_status(LISTEN_SOCKET, &avail, &status, &net_err) != FN_ERR_OK)
+      return 0;
+    if (avail)
+      break;
+  }
+  if (!avail)
+    return 0;
+  g.net[0] = 0;
+  return network_read(LISTEN_SOCKET, g.net, 1) == 1 && g.net[0] == c;
+}
+
+void test_net2_accept(void)
+{
+  uint8_t err, retries;
+  uint8_t status;
+  uint16_t avail;
+  FN_ERR net_err;
+
+  SECTION("network_accept");
+
+#if defined(FN_BROKEN_network_accept)
+  SKIP(network_accept);
+#else
+  err = network_open(LISTEN_SOCKET, OPEN_MODE_RW, 0);
+  TEST("able to open listening socket", err == FN_ERR_OK);
+  err = network_open(CLIENT_SOCKET, OPEN_MODE_RW, 0);
+  TEST("able to open client socket", err == FN_ERR_OK);
+
+  for (retries = 0; retries < MAX_SOCKET_RETRIES; retries++) {
+    err = network_status(LISTEN_SOCKET, &avail, &status, &net_err);
+    if (err != FN_ERR_OK)
+      break;
+    if (status == 1)
+      break;
+  }
+
+  TEST("listener reports connection",
+       err == FN_ERR_OK && retries < MAX_SOCKET_RETRIES && status == 1);
+
+  err = network_accept(LISTEN_SOCKET);
+  TEST("accept succeeds", err == FN_ERR_OK);
+  TEST("client's byte reaches the listener", relay_byte('A'));
+
+#ifdef FN_BROKEN_network_accept_second_client
+  printf("SKIP  network_accept_second_client (known broken)\n");
+  tests_skipped++;
+#else
+  err = network_open(CLIENT2_SOCKET, OPEN_MODE_RW, 0);
+  TEST("second client connects", err == FN_ERR_OK);
+  err = network_accept(LISTEN_SOCKET);
+  TEST("second accept with a client connected is refused", err != FN_ERR_OK);
+  err = network_status(LISTEN_SOCKET, &avail, &status, &net_err);
+  printf("  net_error=%u\n", net_err);
+  TEST("status says a connection is in progress",
+       err == FN_ERR_OK && net_err == NETWORK_ERROR_CONNECTION_ALREADY_IN_PROGRESS);
+  TEST("first client's session survives", relay_byte('B'));
+
+  network_close(CLIENT2_SOCKET);
+#endif
+  network_close(CLIENT_SOCKET);
+  network_close(LISTEN_SOCKET);
+#endif
+
+  END_OF_TEST();
+}
+
+/* A READ for more than has arrived must return what did arrive
+ * (fujinet-firmware #1917). STATUS would read it ahead and hide the path,
+ * so the wait is on the clock. */
+void test_net2_short_read(void)
+{
+  uint8_t err, retries, status, sec, ticks;
+  uint16_t avail;
+  FN_ERR net_err;
+  size_t r;
+  static const char pattern[] = "0123456789ABCDEF";
+
+  SECTION("TCP READ larger than what has arrived");
+
+#if defined(FN_BROKEN_network_accept)
+  SKIP(network_accept);
+#else
+  err = network_open(LISTEN_SOCKET, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("open listening socket", err == FN_ERR_OK);
+  err = network_open(CLIENT_SOCKET, OPEN_MODE_RW, OPEN_TRANS_NONE);
+  TEST("open client socket", err == FN_ERR_OK);
+  for (retries = 0; retries < MAX_SOCKET_RETRIES; retries++) {
+    err = network_status(LISTEN_SOCKET, &avail, &status, &net_err);
+    if (err != FN_ERR_OK || status == 1)
+      break;
+  }
+  err = network_accept(LISTEN_SOCKET);
+  TEST("accept succeeds", err == FN_ERR_OK);
+
+  err = network_write(CLIENT_SOCKET, pattern, 16);
+  TEST("client writes 16 bytes", err == FN_ERR_OK);
+
+  clock_get_time(g.clock_fmt, SIMPLE_BINARY);
+  sec = g.clock_fmt[6];
+  for (ticks = 0; ticks < 2; ) {
+    clock_get_time(g.clock_fmt, SIMPLE_BINARY);
+    if (g.clock_fmt[6] != sec) {
+      sec = g.clock_fmt[6];
+      ticks++;
+    }
+  }
+
+  memset(g.net, 0xA5, 64);
+  r = network_bus_read(FUJI_DEVICEID_NETWORK + network_unit(LISTEN_SOCKET) - 1,
+                       g.net, 64);
+  printf("  READ 64 returned %u\n", (unsigned) r);
+  TEST("READ past what arrived still returns data", r >= 16);
+  TEST("the 16 bytes arrive intact", memcmp(g.net, pattern, 16) == 0);
+
+  network_close(CLIENT_SOCKET);
+  network_close(LISTEN_SOCKET);
+#endif
+
+  END_OF_TEST();
+}

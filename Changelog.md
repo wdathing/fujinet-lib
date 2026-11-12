@@ -2,6 +2,90 @@
 
 ## [Unreleased] (Place WIP changes in this section until a release is done)
 
+## [5.1.1] 2026-11-11
+
+- [nes] Add the NES target for the FujiNet NES cartridge
+- [nes][coleco] Boot a loaded ROM image with fuji_user_rom_status() and fuji_enable_user_rom(), as on CoCo and MSX
+- [msx] fuji_enable_user_rom() keeps UNAPI resident, reaching the cartridge's IO window through its subslot; added fuji_set_cart_mode()
+- [msx] UNAPI discovery finds and initializes the FujiNet ROM itself if a ROM that ran first left EXTBIO unhooked
+- fuji_get_device_slots(), fuji_put_device_slots() and the host slot pair take a count that is an expression; CONFIG's `8+2` on Apple II transferred 306 bytes instead of 380
+- [c64] FujiDirEntry.size is 32 bits, so fuji_file_stat() reports files of 64 KiB and up correctly (needs fujinet-firmware #2251)
+- [c64] Read the status byte that each IEC transaction now returns; without it every reply is misread (needs fujinet-firmware #2253)
+- [adam] fuji_wait_jiffies() counts display frames instead of CPU cycles; a 1 s wait took 1.2 s on hardware
+- wait_jiffies() is now fuji_wait_jiffies() and takes a 16-bit count; fuji_sleep_ms() wraps it in milliseconds
+- [msx] fuji_read_appkey() and fuji_write_appkey() link
+- [pmd85] A jiffy is 1/50 s, matching the display; waits ran about 18% long
+- [h89][model2] Each bus call drains stale reply bytes first; [h89] the SLIP sync gives up after 4096 bytes with no END
+- [coleco] Add the ColecoVision target for the FujiNet Coleco cartridge
+- [atari5200] Add the Atari 5200 target for the FujiNet 5200 cartridge
+- [c64] The clock calls go to the clock, IEC device 29, instead of the FujiNet device, which refuses them (needs fujinet-firmware #2342)
+
+## [5.1.0] 2026-10-27
+
+- [msx] UNAPI works from a subslot and under MSX-DOS
+- [h89] Add Heathkit H89 targets (h89-cpm, h89-hdos) using FujiBus over the 8255 PPI, port routines from Jeff Tranter's bring-up
+- [h89] Don't reboot the ESP32 when the card is already set up
+- [msx] network_bus_read/write use NETCMD_READ/NETCMD_WRITE
+- [h89] Set up the 8255 after a reset even when EN reads high
+- fuji_open_directory_filter() no longer sends stale bytes after the path as the filter, and accepts a NULL filter
+- [adam][lynx][c64] network_write() splits a write that does not fit one bus packet instead of overrunning the packet
+- [apple2][adam][lynx][c64][pmd85] Setting the WiFi network with fuji_set_ssid() works; it used to send a garbled network name and password, leaving the FujiNet unable to connect
+- [coco][msx] fuji_enable_user_rom() boots the FujiNet cartridge's user ROM
+- [h89] Port B is an input (mode word C2H), and every program sets up the 8255
+- [adam] Commands FujiNet refuses after accepting them, such as an open, close, seek or write, now report the failure (needs fujinet-firmware #2205)
+- [adam] The reply to a command that waits on the network, such as the status that sends an HTTP request, no longer times out
+- [h89] Port A runs straight to the ESP32 (the card's 74LVC245 is gone): the H89 no longer drives DIR and /OE (needs fujinet-firmware #2232)
+- [adam] fuji_copy_file() waits for a slow copy instead of reporting it failed after about 4 s
+- wait_jiffies() is part of the library
+
+## [5.0.0] 2026-10-09
+
+fujinet-lib-experimental is merged into fujinet-lib.
+
+### Architecture
+
+- [all] Core functions are written once in shared code on top of a small per-platform bus layer
+  (`fuji_bus_call()`), instead of being reimplemented for each platform (Chris Osborn)
+- [all] Build system switched to MekkoGX makefiles; `make release` builds per-platform release zips (Chris Osborn)
+- [all] Added `fujinet-version.h` with `FNLIB_VERSION_*` macros (Chris Osborn)
+- [all] Added an integration test suite under `testing/`, built as one test disk per platform with a
+  menu on Adam, CoCo and MS-DOS (Chris Osborn, Rich Stephens, delysio, Thom Cherryhomes)
+- [all] `fn_device_error` removed (Chris Osborn)
+
+### New platforms
+
+- [msx] MSX, using UNAPI (Chris Osborn)
+- [model2] TRS-80 Model II over FujiNet RS232 (Chris Osborn)
+- [lynx] Atari Lynx (Shawn Jefferson, Chris Osborn)
+- [msdos] Reworked to use the FujiNet RS232 INT F5h interface (FEP-004) (Chris Osborn)
+
+### New features
+
+- [all] QR code functions (Noah Burney, Rich Stephens)
+- [all] `network_set_eol()` and the NETWORK_SET_EOL command (Chris Osborn)
+- [all] `network_proceed()` to check for data or errors without a status command (Chris Osborn)
+- [all] Network filesystem functions and more `network_` functions (Rich Stephens, Chris Osborn)
+- [all] `PARSER_XML` parser mode (Rich Stephens)
+- [all] Clock time format with hundredths of a second (Rich Stephens)
+- [all] File copy waits for the copy to finish (Chris Osborn, Rich Stephens)
+- [adam] App key and clock support (Chris Osborn, Rich Stephens)
+
+### Fixes
+
+- [apple2] `sp_status` sometimes failing (robjustice)
+- [apple2] Clock hundredths (Rich Stephens)
+- [atari] `fuji_scan_for_networks()` reply length (Chris Osborn)
+- [coco] App key write and `fuji_set_directory_position()` (Rich Stephens)
+- [adam] A NAKed app key read is treated as an empty key, and network reads use an explicit length (Rich Stephens)
+- [msdos] Network read/write return 0 on failure (Chris Osborn)
+- [all] Endian handling, `fuji_set_ssid()` and `fuji_create_new()` (Chris Osborn, Rich Stephens)
+
+### Not yet ported
+
+- [vic20] [plus4] have no 5.0 build yet; use 4.11.2 for these
+- [apple2gs] Not ported yet; its build tools need a paid license
+- [dragon] Dragon support was added to the 4.x code after 4.11.2 but has not been ported yet (wdathing)
+
 ## [4.11.2] 2026-06-11
 
 - [c64] Fix compilation of broken host_prefix code by using malloc
@@ -267,7 +351,7 @@ The only one that shouldn't change to C is sp_dispatch, as it uses self modifyin
 Bugfix release:
 
 - [apple2] fix network_status on apple2enh by setting y specifically
-- replaced BUILD_APPLE2 and BUILD_ATARI in favour of cc65 macros __APPLE2__ and __ATARI__
+- replaced BUILD_APPLE2 and BUILD_ATARI in favor of cc65 macros __APPLE2__ and __ATARI__
 
 ## [3.0.2] - 2024-03-24
 
